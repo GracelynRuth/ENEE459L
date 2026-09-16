@@ -143,7 +143,9 @@ def probe_memory_total_kb(root: Path = Path("/")) -> dict[str, Any]:
     ever sees the pool. Students are expected to notice and to explain it in
     their report rather than round it up.
     """
-    
+    src = "/proc/meminfo"
+    raw = read_text(root, src)
+    m = re.search(r"^MemTotal:\s+(\d+)\s*kB" , raw)
     return {"value": int(m.group(1)), "source": src, "status": "ok"}
 
 
@@ -159,8 +161,19 @@ def probe_root_source(root: Path = Path("/")) -> dict[str, Any]:
     /proc/mounts is preferred over `findmnt` because it needs no external
     binary and no elevation, and because it is what findmnt reads anyway.
     """
+    src = "/proc/mounts"
+    details={"value": "", "kind": "", "source": "/proc/mounts", "status": "ok"}
+    with open ("/proc/mounts", "r") as f:
+        for line in f:
+            words = line.split()
+            if line.startswith("/dev/nvme"):
+                details["value"] = words[0]
+                details["kind"] = "nvme"
+            if line.startswith("/dev/mmcblk") or line.startswith("/dev/sd"):
+                details["value"] = words[0]
+                details["kind"] = "ssd"
     
-    return unknown(src, "no root mount entry found in mount table")
+    return details
 
 
 def probe_nvme_present(root: Path = Path("/")) -> dict[str, Any]:
@@ -171,11 +184,24 @@ def probe_nvme_present(root: Path = Path("/")) -> dict[str, Any]:
     is what lets the troubleshooting tree in the lab guide send a student to
     the right branch.
     """
-    
+    nvme_dir = root / "sys/block/nvme0n1"
+    model_file = nvme_dir / "device/model"
+
+    model = ""
+    flag = False
+    if nvme_dir.exists():
+        flag = True
+        
+        try:
+            if model_file.exists():
+                model = model_file.read_text().strip()
+        except (PermissionError, OSError):
+            model = None
+
     return {
-        "value": ,
-        "model": ,
-        "source": ,
+        "value": flag,
+        "model": model,
+        "source": str(nvme_dir),
         "status": "ok",
     }
 
@@ -191,16 +217,37 @@ def probe_pcie_link(root: Path = Path("/"), lspci_output: str | None = None) -> 
     `lspci_output` exists so the tests can drive this without root or hardware.
     In normal use it is None and the probe shells out.
     """
-        
-    return {
-        "value":,
-        "negotiated": ,
-        "capability": ,
-        "interpretation": ,
-        "source": ,
-        "status": "ok",
+    details = {
+        "value": "",
+        "negotiated": None,
+        "capability": None,
+        "interpretation": "unknown",
+        "source": "lspci -vv",
+        "status": "ok"
     }
 
+    text = run(["lspci", "-vv"])
+
+    if not text or not text.strip():
+        return details
+
+    lnk_cap_line = None
+    lnk_sta_line = None
+
+    for line in text.splitlines():
+        if "LnkCap:" in line:
+            lnk_cap_line = line.strip()
+        elif "LnkSta:" in line:
+            lnk_sta_line = line.strip()
+
+    if lnk_sta_line:
+        details["negotiated"] = _parse_link_line(lnk_sta_line)
+    if lnk_cap_line:
+        details["capability"] = _parse_link_line(lnk_cap_line)
+    
+    details["value"] = details["negotiated"]["raw"]
+
+    return details
 
 def probe_thermal_zones(root: Path = Path("/")) -> dict[str, Any]:
     """Every thermal zone the kernel exposes, in degrees C.
@@ -210,12 +257,38 @@ def probe_thermal_zones(root: Path = Path("/")) -> dict[str, Any]:
     than once, and it is a good, cheap lesson in reading units before reading
     numbers.
     """
-    return {
-        "value": ,
-        "zones": ,
-        "source": ,
-        "status": "ok",
+    src = "sys/class/thermal/thermal_zone*"
+    details = {
+        "value": None,
+        "zones": [],
+        "source": src + "/temp" ,
+        "status": 'ok'
     }
+
+    zones_paths = list(root.glob(src))
+    temps = []
+    for zone_dir in zones_paths:
+        type_file = zone_dir / "type"
+        temp_file = zone_dir / "temp"
+
+        try:
+            zone_type = type_file.read_text().strip() #print(zone_type)
+            raw_temp = temp_file.read_text().strip()
+            if not raw_temp:
+                details["zones"].append({
+                    "type": zone_type,
+                    "temp": int(raw_temp)
+                })
+
+            temps.append(raw_temp)
+        except (FileNotFoundError, PermissionError, ValueError, OSError, TypeError, AttributeError):
+            return unknown(details, f"Failed to read data from {zone_dir.name}")
+            
+    # Calculate the max temperature out of all zones
+    if temps:
+        details["value"] = max(temps)
+    return details
+    
 
 
 def probe_power_mode(root: Path = Path("/"), nvpmodel_output: str | None = None) -> dict[str, Any]:
@@ -226,12 +299,44 @@ def probe_power_mode(root: Path = Path("/"), nvpmodel_output: str | None = None)
     same model are usually reporting different power modes, and without this
     field there is no way to find that out after the fact.
     """
-    return {
-        "value": ,
-        "mode_id": ,
-        "source": ,
+
+    src = "nvpmodel -q"
+    result ={
+        "value": "",
+        "mode_id": 0,
+        "source": src,
         "status": "ok",
     }
+
+    text = nvpmodel_output
+    if text is None:
+        try:
+            text = run(["nvpmodel", "-q"])
+            result["status"] = "ok"
+        except Exception:
+            result["status"] = unknown()
+            return result
+    else:
+        result["status"] = "ok"
+
+    mode_name_match = re.search(r"NV Power Mode:\s*(.+)", text)
+    if not mode_name_match:
+        result["status"] = unknown()
+        return result
+    mode_name_string = mode_name_match.group(1)
+    mode_id_match = re.search(r"^\s*(\d+)\s*$", mode_name_string, re.MULTILINE)
+
+    result["value"] = mode_name_string
+    if not mode_id_match:
+        mode_id_match = re.search(r"^\s*(\d+)\s*$", text, re.MULTILINE)
+
+    if not mode_id_match:
+        result["status"] = unknown()
+        return result
+    
+    result["mode_id"] = int(mode_id_match.group(1))
+
+    return result
 
 ## for debugging - uncomment the following lines for debugging.
 # if __name__ == "__main__":

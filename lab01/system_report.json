@@ -1,0 +1,59 @@
+{
+    "module_model": {
+        "value": "NVIDIA Jetson Orin Nano Engineering Reference Developer Kit Super",
+        "source": "/proc/device-tree/model",
+        "status": "ok"
+    },
+    "memory_total_kb": {
+        "value": 7789948,
+        "source": "/proc/meminfo",
+        "status": "ok"
+    },
+    "root_source": {
+        "value": "/dev/nvme0n1p10",
+        "kind": "nvme",
+        "source": "/proc/mounts",
+        "status": "ok"
+    },
+    "nvme_present": {
+        "value": true,
+        "model": "K-RICARD NVME 256GB",
+        "source": "/sys/block/nvme0n1",
+        "status": "ok"
+    },
+    "pcie_link": {
+        "value": "LnkSta:\tSpeed 2.5GT/s (ok), Width x1 (ok)",
+        "negotiated": {
+            "raw": "LnkSta:\tSpeed 2.5GT/s (ok), Width x1 (ok)",
+            "gts": 2.5,
+            "width": 1,
+            "gen": 1
+        },
+        "capability": {
+            "raw": "LnkCap:\tPort #0, Speed 2.5GT/s, Width x1, ASPM L0s L1, Exit Latency L0s unlimited, L1 <64us",
+            "gts": 2.5,
+            "width": 1,
+            "gen": 1
+        },
+        "interpretation": "unknown",
+        "source": "lspci -vv",
+        "status": "ok"
+    },
+    "thermal_zones": {
+        "value": null,
+        "source": {
+            "value": null,
+            "zones": [],
+            "source": "sys/class/thermal/thermal_zone*/temp",
+            "status": "ok"
+        },
+        "status": "unknown",
+        "detail": "Failed to read data from thermal_zone2"
+    },
+    "power_mode": {
+        "value": "25W",
+        "mode_id": 1,
+        "source": "nvpmodel -q",
+        "status": "ok"
+    }
+}
