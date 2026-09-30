@@ -1,0 +1,68 @@
+{
+    "warmup_boundary": {
+        "value": 1,
+        "source": "leading prefix above (1 + 0.5) x median of the run's second half",
+        "status": "ok",
+        "settled_rate_ms": 18.59623,
+        "threshold_ms": 27.894344999999998,
+        "tolerance": 0.5,
+        "retained": 1
+    },
+    "summarize_setup": {
+        "n": 100,
+        "mean": 22.823851330000004,
+        "std": 41.64476207497268,
+        "min": 18.448209,
+        "max": 435.10298,
+        "p50": 18.6113,
+        "p95": 19.0999,
+        "p99": 23.8344
+    },
+    "is_multimodal": {
+        "value": true,
+        "source": "widest trimmed gap >= 20.0x the median gap, with >= 10% of samples on each side",
+        "status": "ok",
+        "gap_ratio": 68.51153559914655,
+        "widest_gap_ms": 0.13808500000000024,
+        "typical_gap_ms": 0.0020154999999988377,
+        "modes": [
+            {
+                "n": 87,
+                "share": 0.87,
+                "median_ms": 18.600118
+            },
+            {
+                "n": 13,
+                "share": 0.13,
+                "median_ms": 19.077605
+            }
+        ]
+    },
+    "probe_power_state": {
+        "value": null,
+        "source": "missing sudo permissions",
+        "status": "unknown",
+        "detail": "end"
+    },
+    "probe_telemetry": {
+        "temperature_c": {
+            "value": 53.437,
+            "source": "/sys/devices/virtual/thermal",
+            "status": "ok",
+            "zone": "soc1-thermal",
+            "zones_read": 6
+        },
+        "power_mw": {
+            "value": null,
+            "source": "sys/bus/i2c/drivers/ina3221/1-0040/hwmon/hwmon3/in1_input | sys/bus/i2c/drivers/ina3221/1-0040/iio:device0/in_power0_input | sys/bus/i2c/drivers/ina3221x/1-0040/iio:device0/in_power0_input",
+            "status": "unknown",
+            "detail": "no power sensor file found"
+        },
+        "gpu_utilization_percent": {
+            "value": 20.4,
+            "source": "sys/devices/platform/gpu.0/load",
+            "status": "ok",
+            "units": "per mile / 10"
+        }
+    }
+}

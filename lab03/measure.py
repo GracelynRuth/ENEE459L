@@ -191,7 +191,7 @@ def is_multimodal(samples: list[float]) -> dict[str, Any]:
 
 
 def probe_power_state(bench: Bench) -> dict[str, Any]:
-    out = bench.runner("nvpmodel", "-q")
+    out = bench.runner("nvpmodel -q")
     if out.returncode != 0:
         return unknown("missing sudo permissions", "end")
     lines = out.splitlines()
@@ -224,24 +224,24 @@ def probe_telemetry(bench: Bench) -> dict[str, Any]:
     """Read temperature, board power consumption, and GPU utilization."""
 
     thermal_root = bench.telemetry / "sys/devices/virtual/thermal"
-
     temperatures = []
-
+    zones = 0
     if thermal_root.exists():
-        for temp_file in thermal_root.glob("thermal_zone*/temp"):
+        for temp_file in thermal_root.glob("thermal_zone*"):
+            temp_file = temp_file / "temp"
+
             try:
                 with open(temp_file, "r") as f:
                     raw_temp = f.read().strip()
+                    zones += 1
 
-                temp = int(raw_temp) / 1000.0
-
-                # Ignore disabled sensors
-                if temp <= -1000:
+                if not raw_temp:
                     continue
 
+                temp = int(raw_temp) / 1000.0
                 temperatures.append(temp)
 
-            except (OSError, ValueError):
+            except (OSError, ValueError, TypeError) as e:
                 continue
 
     if temperatures:
@@ -249,8 +249,10 @@ def probe_telemetry(bench: Bench) -> dict[str, Any]:
 
         temperature = {
             "value": highest_temp,
-            "source": thermal_root,
-            "status": "ok"
+            "source": str(thermal_root),
+            "status": "ok",
+            "zone": "soc1-thermal",
+            "zones_read": zones
         }
     else:
         temperature = unknown(
@@ -258,28 +260,28 @@ def probe_telemetry(bench: Bench) -> dict[str, Any]:
             "no valid thermal zones found"
         )
 
-    power_raw = read_first(bench.telemetry, POWER_RAIL_CANDIDATES)
-
-    if power_raw is None:
-        power = unknown(
-            "INA3221",
-            "no power sensor file found"
-        )
-    else:
-        try:
-            power_mw = int(power_raw)
-
-            power = {
-                "value": power_mw,
-                "source": "INA3221",
-                "status": "ok"
-            }
-
-        except ValueError:
+    for path in POWER_RAIL_CANDIDATES:
+        power_raw = read_first(bench.telemetry, path)
+        if power_raw is None:
             power = unknown(
-                "INA3221",
-                "power sensor value was not an integer"
+                " | ".join(POWER_RAIL_CANDIDATES),
+                "no power sensor file found"
             )
+        else:
+            try:
+                power_mw = int(power_raw)
+
+                power = {
+                    "value": power_mw,
+                    "source": " | ".join(POWER_RAIL_CANDIDATES),
+                    "status": "ok"
+                }
+                break
+            except ValueError:
+                power = unknown(
+                    " | ".join(POWER_RAIL_CANDIDATES),
+                    "power sensor value was not an integer"
+                )
 
     gpu_source, gpu_raw = read_first(bench.telemetry, GPU_LOAD_CANDIDATES)
 
@@ -294,8 +296,9 @@ def probe_telemetry(bench: Bench) -> dict[str, Any]:
 
             gpu = {
                 "value": gpu_percent,
-                "source": "GPU load",
-                "status": "ok"
+                "source": gpu_source,
+                "status": "ok",
+                "units": "per mile / 10"
             }
 
         except ValueError:
@@ -305,43 +308,43 @@ def probe_telemetry(bench: Bench) -> dict[str, Any]:
             )
 
     return {
-        # "temperature": temperature,
-        "power": power,
-        "gpu": gpu
+        "temperature_c": temperature,
+        "power_mw": power,
+        "gpu_utilization_percent": gpu
     }
 
 ## for debugging - uncomment the following lines for debugging.
-if __name__ == "__main__":
-    env = Bench.real()
-    # samples = run_timed_iterations(env, repeats=100)
+# if __name__ == "__main__":
+#     env = Bench.real()
+#     # samples = run_timed_iterations(env, repeats=100)
 
-    out = probe_telemetry(env)
+#     out = probe_telemetry(env)
 
-    print(out)
+#     print(out)
 
 # for generating system_report.json
-# if __name__ == "__main__":
-#     # calling base environment
-#     env = Bench.real()
+if __name__ == "__main__":
+    # calling base environment
+    env = Bench.real()
 
-#     # get your samples
-#     samples = run_timed_iterations(env, repeats=100)
+    # get your samples
+    samples = run_timed_iterations(env, repeats=100)
 
-#     # testing measurments and probes
-#     report = {
-#         "warmup_boundary": find_warmup_boundary(samples),
-#         "summarize_setup": summarize(samples),
-#         "is_multimodal": is_multimodal(samples),
-#         "probe_power_state": probe_power_state(env),
-#         "probe_telemetry": probe_telemetry(env),
-#     }
+    # testing measurments and probes
+    report = {
+        "warmup_boundary": find_warmup_boundary(samples),
+        "summarize_setup": summarize(samples),
+        "is_multimodal": is_multimodal(samples),
+        "probe_power_state": probe_power_state(env),
+        "probe_telemetry": probe_telemetry(env),
+    }
 
-#     # save samples
-#     path = "samples_analysis.json"
-#     with open(path, "w", encoding="utf-8") as f:
-#         json.dump(samples, f, indent=4)
+    # save samples
+    path = "samples_analysis.json"
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(samples, f, indent=4)
 
-#     # save report
-#     path = "system_report.json"
-#     with open(path, "w", encoding="utf-8") as f:
-#         json.dump(report, f, indent=4)
+    # save report
+    path = "system_report.json"
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(report, f, indent=4)
