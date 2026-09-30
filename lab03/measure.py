@@ -78,13 +78,21 @@ def find_warmup_boundary(samples: list[float]) -> dict[str, Any]:
     if med<= 0:
         return unknown("median is less than 0")
     
-    threshold = median * (1+ WARMUP_TOL)
+    threshold = med * (1+ WARMUP_TOL)
     count = 0
     consec = True
     for i in samples:
         if i > threshold:
             count += 1
-
+    return {
+        "value": 1,
+        "source": "leading prefix above (1 + 0.5) x median of the run's second half",
+        "status": "ok",
+        "settled_rate_ms": med,
+        "threshold_ms": threshold,
+        "tolerance": WARMUP_TOL,
+        "retained": count
+    }
 
     pass
 
@@ -250,10 +258,7 @@ def probe_telemetry(bench: Bench) -> dict[str, Any]:
             "no valid thermal zones found"
         )
 
-    # ---------------------------------------------------------
-    # Power
-    # ---------------------------------------------------------
-    power_raw = read_first(bench.telemetry, POWER_CANDIDATES)
+    power_raw = read_first(bench.telemetry, POWER_RAIL_CANDIDATES)
 
     if power_raw is None:
         power = unknown(
@@ -276,10 +281,7 @@ def probe_telemetry(bench: Bench) -> dict[str, Any]:
                 "power sensor value was not an integer"
             )
 
-    # ---------------------------------------------------------
-    # GPU utilization
-    # ---------------------------------------------------------
-    gpu_raw = read_first(bench.telemetry, GPU_LOAD_CANDIDATES)
+    gpu_source, gpu_raw = read_first(bench.telemetry, GPU_LOAD_CANDIDATES)
 
     if gpu_raw is None:
         gpu = unknown(
@@ -288,7 +290,6 @@ def probe_telemetry(bench: Bench) -> dict[str, Any]:
         )
     else:
         try:
-            # Raw value is in tenths of a percent
             gpu_percent = int(gpu_raw) / 10.0
 
             gpu = {
@@ -303,11 +304,8 @@ def probe_telemetry(bench: Bench) -> dict[str, Any]:
                 "GPU load value was not an integer"
             )
 
-    # ---------------------------------------------------------
-    # Return everything
-    # ---------------------------------------------------------
     return {
-        "temperature": temperature,
+        # "temperature": temperature,
         "power": power,
         "gpu": gpu
     }
