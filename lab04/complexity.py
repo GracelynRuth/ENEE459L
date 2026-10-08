@@ -45,8 +45,49 @@ TIE_EXACT = True
 # 1. How many numbers are stored
 # ===========================================================================
 
+def _layer_parameters(ly: layer) -> int:
+  if ly.kind == "conv":
+    Cout = ly.out_shape[0]
+    Cin = ly.in_shape[0]
+    kh,kw = ly.kernel
+    n_weights = Cout * (Cin//ly.groups) * kh * kw
+    if ly.bias:
+      n_weights += Cout
+    return n_weights
+  elif ly.kind == "linear":
+    fout = ly.out_shape[0]
+    fin = ly.in_shape[0]
+    n_weights = fout * fin
+    if ly.bias:
+      n_weights += fout
+
+    return n_weights
+  elif ly.kind == "bn":
+    return BN_PARAMS_PER_CHANNEL * ly.out_shape[0]
+  else:
+    return 0
+
 def count_parameters(graph: Graph) -> dict[str, Any]:
-    pass
+  per_layer = {}
+  total = 0
+  for ly in graph.layers:
+    par_count = _layer_parameters(ly)
+    per_layer[ly.name] = par_count
+    total += par_count
+  
+  return {
+    "model_name": "toy_resnet",
+    "layer_count": len(ly.graph),
+    "count_parameters": {
+      "value": total,
+      "source": f"toy_resnet: {len(ly.graph)} layers, shapes from the description",
+      "status": "computed",
+      "per_layer": per_layer,
+      "includes_bias": true,
+      "excludes_bn_buffers": true,
+      "bn_params_per_channel": BN_PARAMS_PER_CHANNEL
+    }
+  }
 
 
 # ===========================================================================
@@ -76,11 +117,92 @@ def model_size_bytes(graph: Graph) -> dict[str, Any]:
     Returns a `computed` finding whose value is bytes, with the per-dtype
     breakdown that makes the first bullet checkable.
     """
-    pass
+  per_dtype = {}
+  per_layer = {}
+  buffer_bytes = 0.0
+  per_dtype[BUFFER_DTYPE] = buffer_bytes
+  for ly in graph.layers:
+    par_count = _layer_parameters(ly)
+    per_layer[ly.name] = par_count
+    par_bytes = par_count * dtype_bytes(ly.weight_dtype)
+
+    per_dtype[ly.weight_dtype] = par_bytes
+
+    if ly.kind == "bn":
+      nl_buf =BN_BUFFERS_PER_CHANNEL * ly.out_shape[0]
+      buf_bytes = nl_buf * dtype_bytes(BUFFER_DTYPE)
+      buffer_bytes += buf_bytes
+      per_dtype[BUFFER_DTYPE] += buf_bytes
+      per_layer[ly.name] += buf_bytes
+  
+  total = sum(per_layer.values())
+
+  return {
+    "value": total,
+    "source": "toy_resnet: per-layer dtypes, buffers at fp32",
+    "status": "computed",
+    "per_layer": per_layer,
+    "per_dtype": per_dtype,
+    "buffer_bytes": buffer_bytes,
+    "container_overhead_excluded": true,
+    "note": "not the size of the file on disk; see the handout, Stage A step 3"
+  }
+
 
 # ===========================================================================
 # 3. The memory nobody puts in the table
 # ===========================================================================
+def _elements(shape: tuple[int, ...]) -> int:
+  result = 1
+  for i in shape:
+    result *= i
+  return result
+
+def _last_use(graph: Graph) -> dict[str, int]:
+  last = {}
+  names = [ly.name for ly in graph.layers]
+
+    for i, ly in enumerate(graph.layers):
+
+        if ly.reads:
+            for t in ly.reads:
+                last[t] = i
+
+        elif i == 0:
+            last["__input__"] = 0
+
+        else:
+            last[names[i - 1]] = i
+
+        # If nobody explicitly reads this layer's output,
+        # assume it dies when it is produced.
+        last.setdefault(ly.name, i)
+
+    # Keep final output alive through the end.
+    if graph.layers:
+        last[graph.layers[-1].name] = len(graph.layers) - 1
+
+    return last
+
+def _peak_elements(graph: Graph, last_use: dict[str, int]) -> int:
+  live = {"__input__": _elements(graph.input_shape)}
+
+  peak = sum(live.values())
+
+  for i, layer in enumerate(graph.layers):
+    live[layer.name] = layer.out_elements
+
+    peak = max(peak, sum(live.values()))
+
+    tensors_r = [
+      tensor for tensor, last_idc in last_use.items()
+      if last_idc == i and tensor in live
+    ]
+    
+    for tensor in tensors_r:
+      del live[tensor]
+
+  return peak
 
 def count_activations(graph: Graph) -> dict[str, Any]:
     """Total and peak activation footprint, in elements and in bytes.
@@ -111,7 +233,53 @@ def count_activations(graph: Graph) -> dict[str, Any]:
     what a memory budget is denominated in, with elements and the layer where
     the peak occurs alongside.
     """
-    pass
+  last_use = _last_use(graph)
+
+  live : dict[str, float] ={}
+
+  live["__input__"] = _elements(graph.input_shape) * dtype_bytes(graph.precision)
+
+  total_elements = 0
+  total_bytes = 0.0
+
+  peak_bytes = sum(live.values())
+  peak_at = "__input__"
+
+  for i, ly in graph.layers:
+    out_b = ly.out_elements * dtype_bytes(ly.act_dtype)
+    live[ly.name] = out_b
+    resident = sum(live.values())
+
+    total_elements += ly.out_elements
+    total_bytes += out_b
+
+    if resident > peak_bytes:
+      peak_bytes = resident
+      peak_at = ly.name
+    
+    tensors_to_remove = [
+      tensor
+      for tensor, last_index in last_use.items()
+      if last_index == i and tensor in live
+    ] 
+
+    for tensor in tensors_to_remove:
+        del live[tensor]
+
+  peak_elements = _peak_elements(graph, last_use)
+
+  return {
+      "value": peak_bytes,
+      "source": "toy_resnet: activation liveness using per-layer activation dtypes",
+      "status": "computed",
+      "peak_at": peak_at,
+      "peak_elements": peak_elements,
+      "total_elements": total_elements,
+      "total_bytes": total_bytes,
+      "includes_network_input": True,
+      "note": "peak is the resident set, not the largest single tensor"
+  }
+    
 
 # ===========================================================================
 # 4. The factor of two that halves everybody's numbers
@@ -139,4 +307,27 @@ def to_flops(macs: dict[str, Any], convention: str = "mac_is_two_flops") -> dict
     An unrecognised convention is `unknown`, not a default. The caller asked
     for something this function does not know how to do.
     """
-    pass
+  if not is_answered(macs):
+    return unknown("to_flops","no valid MAC count was provided")
+
+  if not convention in FLOP_CONVENTIONS:
+    return unknown("to_flops", f"unrecognized convention {convention!r}; \nallowed: {sorted(FLOP_CONVENTIONS)}")
+  
+  factor = FLOP_CONVENTIONS[convention]
+
+  total_flop = macs["value"] * factor
+
+  per_layer = None
+
+  if "per_layer" in macs:
+    per_layer = {name: value * factor for name, value in macs["per_layer"].items()}
+
+  return {
+      "value": macs["value"],
+      "source": "mock_layer_pass",
+      "status": "computed",
+      "convention": convention,
+      "flops_per_mac": factor,
+      "per_layer": per_layer,
+      "note": "a count of operations contains no unit of time"
+    }
