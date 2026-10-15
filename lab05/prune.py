@@ -116,16 +116,11 @@ def channel_keep(t: Tensor, ratio: float, p: float = 2.0) -> tuple[int, ...]:
     """
     lp_norm = _group_scores(t, p)
 
-    drop = min(_drop_count(t.chanels, ratio), t.channels - MIN_CHANNELS)
+    drop = min(_drop_count(t.channels, ratio), t.channels - MIN_CHANNELS)
 
     ch_idxs = set(_smallest_indices(lp_norm, drop))
-
-    res = []
-    for i in range(t.channels - 1):
-        if i in ch_idxs:
-            res.append(i)
     
-    return tuple(sorted(res))
+    return tuple(c for c in range(t.channels) if c not in ch_idxs)
 
 
 # ---------------------------------------------------------------------------
@@ -143,8 +138,10 @@ def apply_mask(t: Tensor, mask: Sequence[int]) -> Tensor:
     if len(mask) != len(t.data):
         raise TensorError ("mask and tensor data lengths do not match")
     
-    v_new = t.data if mask == 1 else 0
-    res = torch.tensor(t.name, t.shape, t.dtype)
+    v_new = []
+    for i in range(len(t.data)):
+        v_new.append(t.data[i] if mask[i] == 1 else 0.0)
+    res = Tensor(t.name, t.shape, tuple(v_new), t.dtype)
     return res
 
 # ---------------------------------------------------------------------------
@@ -165,18 +162,24 @@ def drop_channels(t: Tensor, keep: Sequence[int]) -> Tensor:
     by tensor and accounts for it that way, which is honest as long as
     `sparsity.json` does not claim the model still runs — and it does not.
     """
-    if not keep and len(keep) == len(set(keep)) and min(keep) >= 0 and max(keep) < t.chanels:
+    if any(c < 0 or c >= t.channels for c in keep):
+        raise TensorError("Channel index out of bounds")
+
+    if keep and len(keep) == len(set(keep)):
+
         sorted_keep = sorted(keep)
         
         res = []
-        shapes = [len(keep)]
         for c in sorted_keep:
-            [lo, hi] = [︂c * t.channel_stride, (c + 1) * t.channel_stride]
-            res.append(t.data[lo:hi])
-            shapes.append(len(t.data[lo:hi]))
+            (lo, hi) = _channel_slice(t,c)
+            res.extend(t.data[lo:hi])
 
-        return torch.tensor(res, shapes)
+        shapes = [len(sorted_keep)]
+        shapes.extend(list(t.shape[1:]))
 
+        return Tensor(t.name, tuple(shapes), tuple(res), t.dtype)
+    else:
+        raise (TensorError)
 
 # ---------------------------------------------------------------------------
 # 5. the file
@@ -211,23 +214,26 @@ def bytes_stored(tensors: Sequence[Tensor], storage: str = "dense",
     accounting that rounds in its own favour is the thing this lab teaches you
     to distrust.
     """
-    if storage in {"dense", "masked", "sparse"} and mask_encoding in {"framework", "bitmap"}:
+    if storage in STORAGE_FORMS and mask_encoding in {"framework", "bitmap"}:
         byte_sum = 0
+        n = total_parameters(tensors)
+
         for t in tensors:
-            n = total_parameters(t)
             db = dtype_bytes(t.dtype)
+            n = len(t.data)
             if storage == "dense":
                 byte_sum += n * db
             elif storage == "masked":
-                byte_sum += (n * db + n * db) if mask_encoding == "framework" else n * db + math.floor((n+7)/8)
+                byte_sum += n * db 
+                if mask_encoding == "framework":
+                    byte_sum += n * db
+                else:
+                    byte_sum += ((n+7)//8)
             else:
-                nnz = 0
-                for v in t.data:
-                    if v != 0.0:
-                        nnz += 1
+                nnz = sum(1 for value in t.data if value != 0.0)
 
                 byte_sum += nnz * db + nnz * INDEX_BYTES
-        return torch.tensor(int(byte_sum))
+        return int(byte_sum)
 
 # ---------------------------------------------------------------------------
 # 6. one row of the accounting table
@@ -318,30 +324,46 @@ def classify_removal(before: Sequence[Tensor], after: Sequence[Tensor],
     will say so. It is reporting a property of the values, not a claim that
     anybody pruned with a 2:4 constraint in mind.
     """
-    if before.shape != after.shape:
+    if len(before) != len(after):
         return "structurally absent"
-    
-    if storage="sparse":
+
+    if storage == "sparse":
         return "stored sparse"
-    
-    for t in after:
 
-        if len(t.data) % 4 != 0:
-            return "masked"
+    if storage not in {"dense", "masked"}:
+        raise TensorError(f"unsupported storage form: {storage}")
 
-        for i in range(0, len(t.data), 4):
-            block = t.data[i:i+4]
+    has_zero = any(
+        value == 0.0
+        for tensor in after
+        for value in tensor.data
+    )
 
-            nonzeros = 0
-            for v in block:
-                if v != 0.0:
-                    nonzeros += 1
+    if not has_zero:
+        return "dense"
 
-            if nonzeros > 2:
-                return "masked"
+    patterned = True
 
-    return "patterned"
+    for tensor in after:
+        if len(tensor.data) % NM_M != 0:
+            patterned = False
+            break
 
+        for i in range(0, len(tensor.data), NM_M):
+            block = tensor.data[i:i + NM_M]
+            nonzeros = sum(1 for value in block if value != 0.0)
+
+            if nonzeros > NM_N:
+                patterned = False
+                break
+
+        if not patterned:
+            break
+
+    if patterned:
+        return "patterned"
+
+    return "masked"
 
 
 # ---------------------------------------------------------------------------
@@ -369,23 +391,42 @@ def sweep_model(model: dict[str, Any], ratios: Sequence[float],
     the baseline every other row is a ratio against, and a sweep without it
     has four numbers and no result.
     """
+
+    if "tensors" not in model:
+        raise TensorError("model must contain a 'tensors' entry")
+
     base_tensors = model["tensors"]
+    model_name = str(model.get("name", "model"))
+    results = []
 
-    res = []
-    for g in granularities:
-        format_form = storage or GRANULARITY_STORAGE[g]
+    for granularity in granularities:
+        if granularity not in GRANULARITY_STORAGE:
+            raise TensorError(f"unsupported granularity: {granularity}")
+        storage_form = storage if storage is not None else GRANULARITY_STORAGE[granularity]
 
-        for r in sorted(ratios):
-            if g = "fine":
-                # iterat over t
+        for ratio in sorted(ratios):
+            after = []
+            if granularity == "fine":
+                after = [
+                    apply_mask(tensor, magnitude_mask(tensor, ratio))
+                    for tensor in base_tensors
+                ]
+            else:  
                 after = []
-                for t in base_tensors:
-                    masks = magnitude_mask(t, r)
-                    after.append(apply_mask(t,masks))
+                for tensor in base_tensors:
+                    kept_channels = channel_keep(tensor, ratio, p)
+                    after.append(drop_channels(tensor, kept_channels))
 
-            elif g = "channel":
-                for t in base_tensors:
-                    kept_chan = channel_keep(t, r, p)
-                slices = drop_channels(t, keep)
-            
-            res.append(sparsity_row(model, r, g, base_tensors, after, storage, mask_encoding))
+            results.append(
+                sparsity_row(
+                    model_name,
+                    ratio,
+                    granularity,
+                    base_tensors,
+                    after,
+                    storage=storage_form,
+                    mask_encoding=mask_encoding,
+                )
+            )
+
+    return results
