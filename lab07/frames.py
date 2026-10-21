@@ -114,37 +114,116 @@ def grab_frame(pipeline: str, warmup_frames: int = 15) -> np.ndarray:
 ############################
 
 def frame_bytes(width: int, height: int, fmt: str) -> int:
-    pass
+    if not (width > 0) or not (height > 0):
+        raise FrameError
+    
+    fmt_fac = fmt.lower()
+    if fmt_fac not in FORMATS:
+        raise FrameError
+    
+    total = width * height * _bytes_per_pixel(fmt_fac)
+    bytes_total = total // 1
 
+    return bytes_total
 
 def bytes_per_second(width: int, height: int, fmt: str, fps: float) -> float:
-    pass
+    if fps <= 0:
+        raise FrameError
+    
+    frm_bytes = frame_bytes(width, height, fmt)
+    bandwidth = frm_bytes * fps
 
+    return bandwidth
 
 def frame_stats(pixels: Sequence[float] | Iterable[float]) -> dict[str, float]:
-    pass
+    vals = list(pixels)
+    if not vals:
+        raise FrameError
+    
+    v_min = float(min(vals))
+    v_max = float(max(vals))
 
+    n = len(vals)
+
+    v_mean = float(sum(vals)/n)
+    v_var = float(sum((v - v_mean) ** 2 for v in vals) / n)
+
+    v_std =  float(v_var ** 0.5)
+    v_spread = float(v_max - v_min)
+
+    return {
+        "min": v_min,
+        "max": v_max,
+        "mean": v_mean,
+        "spread": v_spread,
+        "sd": v_std,
+        "samples": n
+    }
 
 def classify(stats: dict[str, float]) -> tuple[str, str]:
-    pass
+    if "max" not in stats or "spread" not in stats or "mean" not in stats:
+        raise FrameError
+    
+    if stats["max"] <= BLACK_MAX:
+        return ("black", "The sensor is registering zero photon response")
+    
+    if stats["spread"] < FLAT_SPREAD:
+        return ("flat", "Contrast is absent across all pixelsflat spread")
+    
+    if stats["mean"] < 0.10:
+        return ("dark", " Structure exists, but exposure is insufficient")
 
+    return ("scene", "The image possesses proper exposure and dynamic range")
 
 def conversion_bytes(width: int, height: int, src: str, dst: str) -> int:
-    pass
+    if src.lower() == dst.lower():
+        return 0
+    
+    read_vol = frame_bytes(width, height, src)
+    wrt_vol = frame_bytes(width, height, src)
 
+    traffic = read_vol + wrt_vol
+
+    return traffic
 
 def resize_bytes(src_w: int, src_h: int, dst_w: int, dst_h: int,
                  fmt: str) -> int:
-    pass
+    src_frame = frame_bytes(src_w, src_h, fmt)
+    dest_frame = frame_bytes(dst_w, dst_h, fmt)
+
+    return src_frame + dest_frame
 
 
 def normalise_bytes(width: int, height: int, channels: int = 3,
                     out_bytes: int = 4) -> int:
-    pass
+    if width <= 0 or height <= 0 or channels <= 0:
+        raise FrameError
+    
+    p = width * height * channels
+    in_bytes = p * 1
+    out_bytes = p * out_bytes
+
+    return in_bytes + out_bytes
 
 
 def summarise_formats(width: int, height: int) -> list[dict[str, Any]]:
-    pass
+    base = frame_bytes(width, height, "rgb")
+
+    res = []
+    for fmt in FORMATS:
+        my_dict = {}
+        my_dict["format"] = fmt
+        n = frame_bytes(width, height, fmt)
+        bpp = _bytes_per_pixel(fmt)
+        my_dict["bytes_per_pixel"] = bpp
+        my_dict["bytes"] = n
+        ratio = n / base
+        my_dict["relative_to_rgb"] = ratio
+        my_dict["note"] = FORMAT_NOTES[fmt]
+        
+        res.append(my_dict)
+    
+    return res
 
 
 ###############################
@@ -177,9 +256,10 @@ def main(
 
     # 4. Compute statistics and scene category
     stats = frame_stats(normalized_luma)
+    # print(stats)
     classification, reason = classify(stats)
 
-    # 5. Calculate memory bus bandwidth and conversion costs
+    # # 5. Calculate memory bus bandwidth and conversion costs
     formats_table = summarise_formats(width, height)
     bgr_bandwidth_bps = bytes_per_second(width, height, "bgr", target_fps)
     nv12_to_bgr_cost = conversion_bytes(width, height, "nv12", "bgr")
