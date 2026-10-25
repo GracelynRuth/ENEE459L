@@ -118,10 +118,10 @@ def quantize_tensor(t: Tensor, bits: int = DEFAULT_BITS,
                     clip: str = "minmax",
                     percentile: float = DEFAULT_PERCENTILE,
                     given_range: tuple[float, float] | None = None) -> Quantized:
-    if not (granularity in GRANULARITIES and clip in CLIP_METHODS):
+    if granularity not in GRANULARITIES or clip not in CLIP_METHODS:
         raise TensorError("granularity and clip not recognized")
 
-    qmin, gmax = _qmin_qmax(bits, symmetric)
+    qmin, qmax = _qmin_qmax(bits, symmetric)
 
     groups = []
     if granularity == "per_channel":
@@ -136,7 +136,7 @@ def quantize_tensor(t: Tensor, bits: int = DEFAULT_BITS,
 
     for lo, hi in groups:
         if given_range:
-            rlo, rhi - float(given_range[0]), float(given_range[1])
+            rlo, rhi = float(given_range[0]), float(given_range[1])
         else:
             rlo , rhi = _range_of ( t.data [lo:hi], clip, percentile, bits )
         s, z = _scale_zero(rlo, rhi, bits,symmetric)
@@ -144,7 +144,7 @@ def quantize_tensor(t: Tensor, bits: int = DEFAULT_BITS,
         zeros.append(z)
 
         for i in range(lo,hi):
-            q = _round_half_up(t.data[i] /s) + zero
+            q = _round_half_up(t.data[i] /s) + z
             if q < qmin or q >qmax:
                 clipped += 1
             codes[i] = max(qmin, min(qmax, q))
@@ -162,7 +162,7 @@ def dequantize(qt: Quantized) -> Tensor:
     
     out = []
     for i, q in enumerate(qt.codes):
-        g = i
+        g = i // stride
         if g > len(qt.scales):
             raise TensorError("stride bigger than number of scales")
         out.append(round(qt.scales[g] * (int(q) - qt.zeros[g]), 8))
@@ -200,7 +200,7 @@ def quantization_error(before: Sequence[Tensor],
 
 def bytes_stored(tensors: Sequence[Tensor], precision: str = "fp32",
                  granularity: str = "per_tensor") -> int:
-    if not(precision in PRECISIONS and granularity in GRANULARITIES):
+    if precision not in PRECISIONS or granularity not in GRANULARITIES:
         raise TensorError("precision or granularity not recognized")
     per = dtype_bytes(precision)
     total = 0.0
@@ -228,16 +228,16 @@ def precision_row(model_name: str, config: Mapping[str, Any],
                   calibration_values: Sequence[float],
                   all_values: Sequence[float]) -> dict[str, Any]:
     
-    for t in tensors:
-        if not t.label:
-            raise TensorError("missing labels")
-        label = t.label
-        precision = t.precision
-        granularity = t.granularity
-        symmetric = t.symmetric
-        clip = t.clip
-        percentile = t.percentile
-        calibration = t.calibration
+    # for t in tensors:
+    label = config.get("label")
+    if not label:
+        raise TensorError("missing labels")
+    precision = config.get("precision")
+    granularity = config.get("granularity", "per_channel")
+    symmetric = config.get("symmetric")
+    clip = config.get("clip", "minmax")
+    percentile = config.get("percentile", DEFAULT_PERCENTILE)
+    calibration = config.get("calibration")
 
     after = []
     scale_count = 0.0
@@ -257,27 +257,29 @@ def precision_row(model_name: str, config: Mapping[str, Any],
     acts = as_tensor("activations", all_values)
     rlo = None
     rhi = None
+    act_after = acts
     if precision == "int8":
         rlo , rhi = _range_of ( calibration_values , clip , percentile , DEFAULT_BITS )
-        qa = quantize_tensor ( acts , DEFAULT_BITS , " per_tensor " , False ,clip , percentile , given_range =( rlo , rhi ) )
+        qa = quantize_tensor ( acts , DEFAULT_BITS , "per_tensor" , False ,clip , percentile , given_range =( rlo , rhi ) )
         act_after = dequantize ( qa )
         clipped = qa.clipped_fraction
     else:
         rlo, rhi = min(acts.data), max(acts.data)
-        if precision == "fp16"
+        if precision == "fp16":
             act_after = to_fp16(acts)
         clipped = 0.0
+    print(clip)
     return {
         "model" : str( model_name ) ,
         "label" : label ,
         "precision" : precision ,
-        "granularity" : granularity if precision == " int8 " else " n / a " ,
-        "symmetric" : symmetric if precision == " int8 " else None ,
-        "calibration" : calibration if precision == " int8 " else " not calibrated " ,
-        "clip" : clip if precision == " int8 " else " n / a " ,
+        "granularity" : granularity if precision == "int8" else "n/a" ,
+        "symmetric" : symmetric if precision == "int8" else None ,
+        "calibration" : calibration if precision == " int8 " else "not calibrated" ,
+        "clip" : clip if precision == "int8" else "n/a" ,
         "parameters" : total_parameters ( tensors ) ,
-        "weight_error" : quantization_error ( tensors , after ) [ " relative "] ,
-        "activation_error" : quantization_error ([ acts ] , [ act_after ]) [ "relative " ] ,
+        "weight_error" : quantization_error ( tensors , after ) [ "relative"] ,
+        "activation_error" : quantization_error ([ acts ] , [ act_after ]) [ "relative" ] ,
         "clipped_fraction" : clipped ,
         "activation_range" : [ round ( float ( rlo ) , 8) , round ( float ( rhi ) ,8) ] ,
         "scale_count" : scale_count ,
