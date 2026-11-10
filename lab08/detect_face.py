@@ -97,9 +97,14 @@ def detect_faces(image_path, output_path="output_detected.png", conf_threshold=0
         None,
         {input_name: img_arr}
     )
+    print("Number of outputs:", len(outputs))
 
-    boxes = np.squeeze(outputs[0], axis=0)
-    scores = np.squeeze(outputs[1], axis=0)
+    for i, output in enumerate(outputs):
+        print(f"Output {i} shape:", output.shape)
+        print(f"Output {i} first values:", output.flatten()[:10])
+
+    scores = np.squeeze(outputs[0], axis=0)
+    boxes = np.squeeze(outputs[1], axis=0)
 
     scores = scores[:, 1]
 
@@ -121,8 +126,6 @@ def detect_faces(image_path, output_path="output_detected.png", conf_threshold=0
     filtered_boxes = hard_nms(
         box_scores,
         iou_threshold=conf_threshold,
-        top_k=top_k,
-        candidate_size=candidate_size
     )
 
     draw = ImageDraw.Draw(image)
