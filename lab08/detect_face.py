@@ -348,5 +348,5 @@ def canny_scipy(image_path, output_path="edges_scipy.png", low=20, high=60):
  
 
 if __name__ == "__main__":
-    detect_faces("face.jpg")
-    canny_scipy("face.jpg")
+    detect_faces("test_photo.jpg")
+    canny_scipy("test_photo.jpg")

@@ -77,6 +77,6 @@
   },
   "verdicts": {
     "level_sentence": "peak -25.31 dBFS, RMS -51.01 dBFS, crest 25.70 dB",
-    "record_sentence": "3 of 13 choices are named; 10 missing (device_name, capture_gain, mic_distance_cm, mic_polar_pattern, room_acoustic_treatment, ambient_noise_level, preamp_model, filter_highpass_hz, target_signal_type, operator_notes)"
+    "record_sentence": "3 of 13 choices are named: present; missing; blank; complete; in_header; hand_written"
   }
 }
